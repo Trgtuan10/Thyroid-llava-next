@@ -99,4 +99,4 @@ if __name__ == "__main__":
     with open('llava_medical.json', 'w', encoding='utf-8') as f:
         json.dump(json_output, f, ensure_ascii=False, indent=4)
 
-    print("Processed dataset saved as llava_medical.json")
+    create_training_data("llava_medical.json")
