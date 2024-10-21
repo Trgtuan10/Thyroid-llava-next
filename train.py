@@ -2,46 +2,100 @@ from transformers import AutoProcessor, BitsAndBytesConfig, LlavaNextForConditio
 from datasets import DatasetDict
 import torch
 import datetime
-
 from dataset import load_dataset, LlavaNextDataset
-from model import LlavaModelPLModule
+from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
+from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+from lightning.pytorch.loggers import WandbLogger
+import lightning as L
+from torch.utils.data import DataLoader
+from nltk import edit_distance
+import numpy as np
+import argparse
 
 
-MAX_LENGTH = 256
-MODEL_ID = "llava-hf/llava-v1.6-mistral-7b-hf"
-REPO_ID = "TrgTuan10/Thyroid-llava-next"
-WANDB_PROJECT = "LLaVaNeXT-Thyroid"
 
-now = datetime.datetime.now()
-WANDB_NAME = "thyroid-" + now.strftime("%Y-%m-%d-%H-%M-%S")
+# Define LlavaModelPLModule class here (same as before)
+class LlavaModelPLModule(L.LightningModule):
+    def __init__(self, config, processor, model, train_dataset, val_dataset, train_collate_fn, eval_collate_fn):
+        super().__init__()
+        self.config = config
+        self.processor = processor
+        self.model = model
 
-USE_LORA = True
-USE_QLORA = False
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
 
-## Load model
+        self.train_collate_fn = train_collate_fn
+        self.eval_collate_fn = eval_collate_fn
 
-# Three options for training, from the lowest precision training to the highest precision training:
-# - QLora
-# - Standard Lora
-# - Full fine-tuning
-if USE_QLORA or USE_LORA:
-    if USE_QLORA:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.float16
+        self.batch_size = config.get("batch_size")
+
+    def training_step(self, batch, batch_idx):
+
+        input_ids, attention_mask, pixel_values, image_sizes, labels = batch
+
+        outputs = self.model(input_ids=input_ids,
+                             attention_mask=attention_mask,
+                             pixel_values=pixel_values,
+                             image_sizes=image_sizes,
+                             labels=labels
+                             )
+        loss = outputs.loss
+
+        self.log(
+            "train_loss",
+            loss,
+            on_step=True,
+            on_epoch=False,
+            prog_bar=True,
+            logger=True
         )
-    model = LlavaNextForConditionalGeneration.from_pretrained(
-        MODEL_ID,
-        torch_dtype=torch.float16,
-        # quantization_config=bnb_config,
-    )
-else:
-    # for full fine-tuning, we can speed up the model using Flash Attention
-    # only available on certain devices, see https://github.com/Dao-AILab/flash-attention?tab=readme-ov-file#installation-and-features
-    model = LlavaNextForConditionalGeneration.from_pretrained(
-        MODEL_ID,
-        torch_dtype=torch.float16,
-        _attn_implementation="flash_attention_2",
-    )
+
+        return loss
+
+    def validation_step(self, batch, batch_idx, dataset_idx=0):
+        # Unpack the batch
+        input_ids, attention_mask, pixel_values, image_sizes, answers = batch
+
+        # Generate predictions using autoregression
+        generated_ids = self.model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            pixel_values=pixel_values,
+            image_sizes=image_sizes,
+            max_new_tokens=self.config.get("max_new_tokens", 128)
+        )
+
+        # Decode the generated tokens into text
+        predictions = self.processor.batch_decode(generated_ids[:, input_ids.size(1):], skip_special_tokens=True)
+
+        scores = []
+        for pred, answer in zip(predictions, answers):
+            # No regex is needed here, directly compare
+            scores.append(edit_distance(pred, answer) / max(len(pred), len(answer)))
+
+            if self.config.get("verbose", False) and len(scores) == 1:
+                print(f"Prediction: {pred}")
+                print(f"    Answer: {answer}")
+                print(f" Normed ED: {scores[0]}")
+
+        # Log validation edit distance
+        self.log("val_edit_distance", np.mean(scores), on_step=True, on_epoch=True, prog_bar=True, logger=True)
+
+        return scores
+
+    def configure_optimizers(self):
+        # you could also add a learning rate scheduler if you want
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.config.get("lr"))
+
+        return optimizer
+
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset, collate_fn=self.train_collate_fn, batch_size=self.batch_size, shuffle=True, num_workers=4)
+
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset, collate_fn=self.eval_collate_fn, batch_size=self.batch_size, shuffle=False, num_workers=4)
 
 def find_all_linear_names(model):
     cls = torch.nn.Linear
@@ -54,24 +108,9 @@ def find_all_linear_names(model):
             names = name.split('.')
             lora_module_names.add(names[0] if len(names) == 1 else names[-1])
 
-    if 'lm_head' in lora_module_names: # needed for 16-bit
+    if 'lm_head' in lora_module_names:  # needed for 16-bit
         lora_module_names.remove('lm_head')
     return list(lora_module_names)
-
-
-lora_config = LoraConfig(
-    r=8,
-    lora_alpha=8,
-    lora_dropout=0.1,
-    target_modules=find_all_linear_names(model),
-    init_lora_weights="gaussian",
-)
-
-model = prepare_model_for_kbit_training(model)
-model = get_peft_model(model, lora_config)
-
-train_dataset = LlavaNextDataset("llava_medical_dataset",  split="train")
-val_dataset = LlavaNextDataset("llava_medical_dataset", split="validation")
 
 def train_collate_fn(examples):
     images = []
@@ -79,7 +118,6 @@ def train_collate_fn(examples):
 
     for example in examples:
         image = example["image"]
-        question = example["question"]
         answer = example["answer"]
 
         # Add the image to the batch
@@ -91,7 +129,7 @@ def train_collate_fn(examples):
                 "role": "user",
                 "content": [
                     {"type": "image"},  # This is where you refer to the image token
-                    {"type": "text", "text": question},
+                    {"type": "text", "text": "Describe this image"},
                 ],
             },
             {
@@ -117,8 +155,6 @@ def train_collate_fn(examples):
     # Return the necessary tensors
     return batch["input_ids"], batch["attention_mask"], batch["pixel_values"], batch["image_sizes"], batch["labels"]
 
-
-
 def eval_collate_fn(examples):
     images = []
     texts = []
@@ -127,7 +163,6 @@ def eval_collate_fn(examples):
     # Loop through the examples in the batch
     for example in examples:
         image = example["image"]          # Extract the image
-        question = example["question"]    # Extract the user's question (text)
         answer = example["answer"]        # Extract the assistant's answer (text)
 
         # Add image to the batch
@@ -139,11 +174,11 @@ def eval_collate_fn(examples):
                 "role": "user",
                 "content": [
                     {"type": "image"},  # Reference to the image
-                    {"type": "text", "text": question},  # User's question
+                    {"type": "text", "text": "Describe this image"},  # User's question
                 ],
             }
         ]
-        
+
         # Apply the conversation template with generation prompt enabled for evaluation
         text_prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
         texts.append(text_prompt)
@@ -156,29 +191,6 @@ def eval_collate_fn(examples):
 
     # Return the necessary tensors for the model's input, along with ground truth answers for evaluation
     return batch["input_ids"], batch["attention_mask"], batch["pixel_values"], batch["image_sizes"], answers
-
-config = {"max_epochs": 10,
-          # "val_check_interval": 0.2, # how many times we want to validate during an epoch
-          "check_val_every_n_epoch": 1,
-          "gradient_clip_val": 1.0,
-          "accumulate_grad_batches": 8,
-          "lr": 1e-4,
-          "batch_size": 1,
-          # "seed":2022,
-          "num_nodes": 1,
-          "warmup_steps": 50,
-          "result_path": "./result",
-          "verbose": True,
-}
-
-model_module = LlavaModelPLModule(config, processor, model)
-
-from lightning.pytorch.callbacks import Callback
-from lightning.pytorch.callbacks.early_stopping import EarlyStopping
-
-from huggingface_hub import HfApi
-
-api = HfApi()
 
 class PushToHubCallback(Callback):
     def on_train_epoch_end(self, trainer, pl_module):
@@ -193,13 +205,128 @@ class PushToHubCallback(Callback):
         pl_module.model.push_to_hub(REPO_ID,
                                     commit_message=f"Training done")
 
-early_stop_callback = EarlyStopping(monitor="val_edit_distance", patience=3, verbose=False, mode="min")
+if __name__ == "__main__":
+    # Get args
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use_lora", type=bool, default=True)
+    parser.add_argument("--use_qlora", type=bool, default=False)
+    parser.add_argument("--lora_rank", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--max_epochs", type=int, default=10)
+    parser.add_argument("--max_steps", type=int, default=-1)
+    parser.add_argument("--val_check_interval", type=int, default=100)
+    parser.add_argument("--log_every_n_steps", type=int, default=100)
+    parser.add_argument("--lr", type=float, default=2e-5)
+    parser.add_argument("--accumulate_grad_batches", type=int, default=8)
+    parser.add_argument("--warmup_steps", type=int, default=50)
+    parser.add_argument("--result_path", type=str, default="./result")
+    parser.add_argument("--verbose", type=bool, default=True)
+    parser.add_argument("--train_dataset", type=str, default="../llava_medical_short_dataset")
+    parser.add_argument("--percent", type=float, default=1)
+    args = parser.parse_args()
 
-from lightning.pytorch.loggers import WandbLogger
+    # Update config with parsed arguments
+    config = {
+        "max_epochs": args.max_epochs,
+        "check_val_every_n_epoch": 1,
+        "gradient_clip_val": 1.0,
+        "accumulate_grad_batches": args.accumulate_grad_batches,
+        "lr": args.lr,
+        "batch_size": args.batch_size,
+        "num_nodes": 1,
+        "warmup_steps": args.warmup_steps,
+        "result_path": args.result_path,
+        "verbose": args.verbose,
+    }
 
-wandb_logger = WandbLogger(project=WANDB_PROJECT, name=WANDB_NAME)
+    MAX_LENGTH = 256
+    MODEL_ID = "llava-hf/llava-v1.6-mistral-7b-hf"
+    REPO_ID = "TrgTuan10/Thyroid-llava-next"
+    WANDB_PROJECT = "LLaVaNeXT-Thyroid"
 
-trainer = L.Trainer(
+    now = datetime.datetime.now()
+    WANDB_NAME = "thyroid-" + now.strftime("%Y-%m-%d-%H-%M-%S")
+
+    USE_LORA = args.use_lora
+    USE_QLORA = args.use_qlora
+
+    # Load processor
+    processor = AutoProcessor.from_pretrained(MODEL_ID)
+
+    ## Load model
+    # Three options for training, from the lowest precision training to the highest precision training:
+    # - QLora
+    # - Standard Lora
+    # - Full fine-tuning
+    if USE_QLORA or USE_LORA:
+        if USE_QLORA:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.float16
+            )
+        model = LlavaNextForConditionalGeneration.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch.float16,
+            # quantization_config=bnb_config,
+        )
+    else:
+        # For full fine-tuning, we can speed up the model using Flash Attention
+        # Only available on certain devices, see https://github.com/Dao-AILab/flash-attention#installation-and-features
+        model = LlavaNextForConditionalGeneration.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch.float16,
+            _attn_implementation="flash_attention_2",
+        )
+
+    # Prepare model for LoRA training if needed
+    if USE_LORA or USE_QLORA:
+        lora_config = LoraConfig(
+            r=args.lora_rank,
+            lora_alpha=8,
+            lora_dropout=0.1,
+            target_modules=find_all_linear_names(model),
+            init_lora_weights="gaussian",
+        )
+
+        model = prepare_model_for_kbit_training(model)
+        model = get_peft_model(model, lora_config)
+
+    # Load datasets
+    dataset_path = args.train_dataset
+    train_dataset = LlavaNextDataset(dataset_path, split="train")
+
+    val_dataset = LlavaNextDataset(dataset_path, split="validation")
+
+    # Initialize Wandb Logger
+    wandb_logger = WandbLogger(project=WANDB_PROJECT, name=WANDB_NAME)
+
+    # Initialize Early Stopping Callback
+    early_stop_callback = EarlyStopping(monitor="val_edit_distance", patience=3, verbose=False, mode="min")
+    #config
+    config = {
+        "max_epochs": args.max_epochs,
+        "check_val_every_n_epoch": 1,
+        "gradient_clip_val": 1.0,
+        "accumulate_grad_batches": args.accumulate_grad_batches,
+        "lr": args.lr,
+        "batch_size": args.batch_size,
+        "num_nodes": 1,
+        "warmup_steps": args.warmup_steps,
+        "result_path": args.result_path,
+        "verbose": args.verbose,
+    }
+    # Initialize the model module
+    model_module = LlavaModelPLModule(
+        config=config,
+        processor=processor,
+        model=model,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        train_collate_fn=train_collate_fn,
+        eval_collate_fn=eval_collate_fn
+    )
+
+    # Initialize Trainer
+    trainer = L.Trainer(
         accelerator="gpu",
         devices=[0],
         max_epochs=config.get("max_epochs"),
@@ -211,6 +338,7 @@ trainer = L.Trainer(
         num_sanity_val_steps=0,
         logger=wandb_logger,
         callbacks=[PushToHubCallback(), early_stop_callback],
-)
+    )
 
-trainer.fit(model_module)
+    # Start training
+    trainer.fit(model_module)

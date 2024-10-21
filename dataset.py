@@ -48,18 +48,17 @@ class LlavaNextDataset(Dataset):
 
         Returns:
             image: The image file path
-            question: The question (input prompt)
             answer: The answer (ground truth text)
         """
         sample = self.dataset[idx]
 
         # Extract image, question, and answer
         image = sample["image"]          # Path to the image
-        question = sample["question"]    # User's question
         answer = sample["answer"]        # Assistant's answer (ground truth)
 
         return {
             "image": image,
-            "question": question,
             "answer": answer
         }
+    
+    
