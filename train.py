@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from nltk import edit_distance
 import numpy as np
 import argparse
+from typing import List
 
 
 
@@ -208,9 +209,10 @@ class PushToHubCallback(Callback):
 if __name__ == "__main__":
     # Get args
     parser = argparse.ArgumentParser()
-    parser.add_argument("--use_lora", type=bool, default=True)
-    parser.add_argument("--use_qlora", type=bool, default=False)
+    parser.add_argument("--use_lora", action="store_true", help="Enable LoRA training.")
+    parser.add_argument("--use_qlora", action="store_true", help="Enable QLoRA training.")
     parser.add_argument("--lora_rank", type=int, default=8)
+    parser.add_argument("--lora_alpha", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_epochs", type=int, default=10)
     parser.add_argument("--max_steps", type=int, default=-1)
@@ -218,11 +220,15 @@ if __name__ == "__main__":
     parser.add_argument("--log_every_n_steps", type=int, default=100)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--accumulate_grad_batches", type=int, default=8)
+    parser.add_argument("--num_nodes", type=int, default=1)
+    parser.add_argument("--strategy", type=str, default=None)
+    parser.add_argument("--gpus", type=str, default="0", help="Comma-separated list of GPUs to use.")
     parser.add_argument("--warmup_steps", type=int, default=50)
     parser.add_argument("--result_path", type=str, default="./result")
-    parser.add_argument("--verbose", type=bool, default=True)
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     parser.add_argument("--dataset", type=str, default="../llava_medical_short_dataset")
     parser.add_argument("--percent", type=float, default=1)
+
     args = parser.parse_args()
 
     # Update config with parsed arguments
@@ -233,7 +239,7 @@ if __name__ == "__main__":
         "accumulate_grad_batches": args.accumulate_grad_batches,
         "lr": args.lr,
         "batch_size": args.batch_size,
-        "num_nodes": 1,
+        "num_nodes": args.num_nodes,
         "warmup_steps": args.warmup_steps,
         "result_path": args.result_path,
         "verbose": args.verbose,
@@ -281,7 +287,7 @@ if __name__ == "__main__":
     if USE_LORA or USE_QLORA:
         lora_config = LoraConfig(
             r=args.lora_rank,
-            lora_alpha=8,
+            lora_alpha=args.lora_alpha,
             lora_dropout=0.1,
             target_modules=find_all_linear_names(model),
             init_lora_weights="gaussian",
@@ -309,7 +315,7 @@ if __name__ == "__main__":
         "accumulate_grad_batches": args.accumulate_grad_batches,
         "lr": args.lr,
         "batch_size": args.batch_size,
-        "num_nodes": 1,
+        "num_nodes": args.num_nodes,
         "warmup_steps": args.warmup_steps,
         "result_path": args.result_path,
         "verbose": args.verbose,
@@ -325,10 +331,16 @@ if __name__ == "__main__":
         eval_collate_fn=eval_collate_fn
     )
 
+    args.gpus = list(map(int, args.gpus.split(',')))
+    # Set default strategy if using multiple GPUs
+    if len(args.gpus) > 1 and args.strategy is None:
+        args.strategy = "ddp"  # Use DDP for multi-GPU training
+
     # Initialize Trainer
     trainer = L.Trainer(
         accelerator="gpu",
-        devices=[0],
+        strategy=args.strategy,
+        devices=args.gpus,
         max_epochs=config.get("max_epochs"),
         accumulate_grad_batches=config.get("accumulate_grad_batches"),
         check_val_every_n_epoch=config.get("check_val_every_n_epoch"),
