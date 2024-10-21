@@ -174,7 +174,7 @@ def eval_collate_fn(examples):
                 "role": "user",
                 "content": [
                     {"type": "image"},  # Reference to the image
-                    {"type": "text", "text": "Describe this image"},  # User's question
+                    {"type": "text", "text": "Predict the TIRADS classification, FNAC result, and potential diagnosis based on this thyroid ultrasound image with: TIRADS is a system that classifies thyroid nodules based on ultrasound features to assess malignancy risk, ranging from benign (TIRADS 1) to highly suspicious (TIRADS 5). FNAC is a procedure that uses a needle to collect cells from nodules for diagnosis, determining if they are benign or malignant. Histopathology examines tissue under a microscope to confirm malignancy, and malignancy refers to the presence of cancerous cells in a nodule."},  # User's question
                 ],
             }
         ]
