@@ -2,7 +2,7 @@ from transformers import AutoProcessor, BitsAndBytesConfig, LlavaNextForConditio
 from datasets import DatasetDict
 import torch
 import datetime
-from dataset import load_dataset, LlavaNextDataset
+from dataset import get_small_dataset, LlavaNextDataset
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
@@ -129,7 +129,7 @@ def train_collate_fn(examples):
                 "role": "user",
                 "content": [
                     {"type": "image"},  # This is where you refer to the image token
-                    {"type": "text", "text": "Describe this image"},
+                    {"type": "text", "text": "Predict the TIRADS classification, FNAC result, and potential diagnosis based on this thyroid ultrasound image with: TIRADS is a system that classifies thyroid nodules based on ultrasound features to assess malignancy risk, ranging from benign (TIRADS 1) to highly suspicious (TIRADS 5). FNAC is a procedure that uses a needle to collect cells from nodules for diagnosis, determining if they are benign or malignant. Histopathology examines tissue under a microscope to confirm malignancy, and malignancy refers to the presence of cancerous cells in a nodule. "},
                 ],
             },
             {
@@ -221,7 +221,7 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_steps", type=int, default=50)
     parser.add_argument("--result_path", type=str, default="./result")
     parser.add_argument("--verbose", type=bool, default=True)
-    parser.add_argument("--train_dataset", type=str, default="../llava_medical_short_dataset")
+    parser.add_argument("--dataset", type=str, default="../llava_medical_short_dataset")
     parser.add_argument("--percent", type=float, default=1)
     args = parser.parse_args()
 
@@ -291,7 +291,7 @@ if __name__ == "__main__":
         model = get_peft_model(model, lora_config)
 
     # Load datasets
-    dataset_path = args.train_dataset
+    dataset_path = args.dataset
     train_dataset = LlavaNextDataset(dataset_path, split="train")
 
     val_dataset = LlavaNextDataset(dataset_path, split="validation")

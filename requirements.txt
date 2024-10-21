@@ -1,0 +1,16 @@
+#using python3.11.10
+
+accelerate==1.0.1
+bitsandbytes==0.44.1
+lightning==2.4.0
+numpy
+torch
+torchvision
+transformers
+pillow
+pytorch-lightning
+datasets
+peft
+nltk
+wandb
+huggingface-hub
