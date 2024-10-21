@@ -2,7 +2,7 @@ from transformers import AutoProcessor, BitsAndBytesConfig, LlavaNextForConditio
 from datasets import DatasetDict
 import torch
 import datetime
-from dataset import get_small_dataset, LlavaNextDataset
+from dataset import LlavaNextDataset
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
