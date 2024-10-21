@@ -19,6 +19,7 @@ pip install -r requirements.txt
 ## Create dataset_dict
 ```
 python make_dataset_dict.py --data_dir "../images" --output_dir "../llava_medical_short_dataset"
+# --data_dir is folder saving Thyroid image
 ```
 
 ## Train
