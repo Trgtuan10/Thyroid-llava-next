@@ -14,3 +14,4 @@ peft
 nltk
 wandb
 huggingface-hub
+flash-attn
