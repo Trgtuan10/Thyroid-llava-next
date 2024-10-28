@@ -53,10 +53,14 @@ class LlavaNextDataset(Dataset):
         sample = self.dataset[idx]
 
         # Extract image, question, and answer
+        question_id = sample["question_id"]
+        question = sample["question"]    # Question asked by the user
         image = sample["image"]          # Path to the image
         answer = sample["answer"]        # Assistant's answer (ground truth)
 
         return {
+            "question_id": question_id,
+            "question": question,
             "image": image,
             "answer": answer
         }

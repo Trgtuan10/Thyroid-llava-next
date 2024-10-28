@@ -7,6 +7,7 @@ from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import ModelCheckpoint
 import lightning as L
 from torch.utils.data import DataLoader
 from nltk import edit_distance
@@ -118,6 +119,7 @@ def train_collate_fn(examples):
     texts = []
 
     for example in examples:
+        question = example["question"]
         image = example["image"]
         answer = example["answer"]
 
@@ -130,7 +132,7 @@ def train_collate_fn(examples):
                 "role": "user",
                 "content": [
                     {"type": "image"},  # This is where you refer to the image token
-                    {"type": "text", "text": "Predict the TIRADS classification, FNAC result, and potential diagnosis based on this thyroid ultrasound image with: TIRADS is a system that classifies thyroid nodules based on ultrasound features to assess malignancy risk, ranging from benign (TIRADS 1) to highly suspicious (TIRADS 5). FNAC is a procedure that uses a needle to collect cells from nodules for diagnosis, determining if they are benign or malignant. Histopathology examines tissue under a microscope to confirm malignancy, and malignancy refers to the presence of cancerous cells in a nodule. "},
+                    {"type": "text", "text": question},
                 ],
             },
             {
@@ -163,6 +165,7 @@ def eval_collate_fn(examples):
 
     # Loop through the examples in the batch
     for example in examples:
+        question = example["question"]    # Extract the user's question
         image = example["image"]          # Extract the image
         answer = example["answer"]        # Extract the assistant's answer (text)
 
@@ -173,9 +176,9 @@ def eval_collate_fn(examples):
         conversation = [
             {
                 "role": "user",
-                "content": [
+                "content": [    
                     {"type": "image"},  # Reference to the image
-                    {"type": "text", "text": "Predict the TIRADS classification, FNAC result, and potential diagnosis based on this thyroid ultrasound image with: TIRADS is a system that classifies thyroid nodules based on ultrasound features to assess malignancy risk, ranging from benign (TIRADS 1) to highly suspicious (TIRADS 5). FNAC is a procedure that uses a needle to collect cells from nodules for diagnosis, determining if they are benign or malignant. Histopathology examines tissue under a microscope to confirm malignancy, and malignancy refers to the presence of cancerous cells in a nodule."},  # User's question
+                    {"type": "text", "text": question},  # User's question
                 ],
             }
         ]
@@ -307,6 +310,15 @@ if __name__ == "__main__":
 
     # Initialize Early Stopping Callback
     early_stop_callback = EarlyStopping(monitor="val_edit_distance", patience=3, verbose=False, mode="min")
+
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_edit_distance",   # The metric to monitor
+        mode="min",                    # 'min' because we want the lowest edit distance
+        save_top_k=3,                  # Save only the best 3 checkpoints
+        filename="{epoch:02d}-{val_edit_distance:.4f}",  # Filename format
+        save_weights_only=True,         # Save model weights only
+        verbose=True,                   # Verbose to print when saving
+    )
     #config
     config = {
         "max_epochs": args.max_epochs,
@@ -349,7 +361,7 @@ if __name__ == "__main__":
         limit_val_batches=5,
         num_sanity_val_steps=0,
         logger=wandb_logger,
-        callbacks=[PushToHubCallback(), early_stop_callback],
+        callbacks=[PushToHubCallback(), early_stop_callback, checkpoint_callback],
     )
 
     # Start training
