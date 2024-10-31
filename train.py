@@ -7,7 +7,6 @@ from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import ModelCheckpoint
 import lightning as L
 from torch.utils.data import DataLoader
 from nltk import edit_distance
@@ -196,6 +195,7 @@ def eval_collate_fn(examples):
     # Return the necessary tensors for the model's input, along with ground truth answers for evaluation
     return batch["input_ids"], batch["attention_mask"], batch["pixel_values"], batch["image_sizes"], answers
 
+
 class PushToHubCallback(Callback):
     def on_train_epoch_end(self, trainer, pl_module):
         print(f"Pushing model to the hub, epoch {trainer.current_epoch}")
@@ -224,7 +224,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--accumulate_grad_batches", type=int, default=8)
     parser.add_argument("--num_nodes", type=int, default=1)
-    parser.add_argument("--strategy", type=str, default=None)
+    parser.add_argument("--strategy", type=str, default="auto")
     parser.add_argument("--gpus", type=str, default="0", help="Comma-separated list of GPUs to use.")
     parser.add_argument("--warmup_steps", type=int, default=50)
     parser.add_argument("--result_path", type=str, default="./result")
@@ -250,7 +250,7 @@ if __name__ == "__main__":
 
     MAX_LENGTH = 256
     MODEL_ID = "llava-hf/llava-v1.6-mistral-7b-hf"
-    REPO_ID = "TrgTuan10/Thyroid-llava-next"
+    REPO_ID = "TrgTuan10/Thyroid-llava-next-multi-prompt"
     WANDB_PROJECT = "LLaVaNeXT-Thyroid"
 
     now = datetime.datetime.now()
@@ -310,15 +310,6 @@ if __name__ == "__main__":
 
     # Initialize Early Stopping Callback
     early_stop_callback = EarlyStopping(monitor="val_edit_distance", patience=3, verbose=False, mode="min")
-
-    checkpoint_callback = ModelCheckpoint(
-        monitor="val_edit_distance",   # The metric to monitor
-        mode="min",                    # 'min' because we want the lowest edit distance
-        save_top_k=3,                  # Save only the best 3 checkpoints
-        filename="{epoch:02d}-{val_edit_distance:.4f}",  # Filename format
-        save_weights_only=True,         # Save model weights only
-        verbose=True,                   # Verbose to print when saving
-    )
     #config
     config = {
         "max_epochs": args.max_epochs,
@@ -361,7 +352,7 @@ if __name__ == "__main__":
         limit_val_batches=5,
         num_sanity_val_steps=0,
         logger=wandb_logger,
-        callbacks=[PushToHubCallback(), early_stop_callback, checkpoint_callback],
+        callbacks=[PushToHubCallback(), early_stop_callback],
     )
 
     # Start training
