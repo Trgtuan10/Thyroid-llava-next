@@ -56,12 +56,22 @@ def extract_results(text):
     else:
         return "Not Found"
 
+def extract_postion(text):
+    pattern = r"Position:\s*(.*)"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        position = match.group(1).strip()
+        return position
+    else:
+        return "Not Found"
+
 def extract_all(text):
     patterns = {
         "TIRADS": r"TIRADS:\s*(\d+)",
         "Size": r"Size:\s*(\d+)\s*x\s*(\d+)",
         "Bbox": r"Bbox:\s*\[(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\]",
-        "Results": r"Results:.*\((\d)\)"
+        "Results": r"Results:.*\((\d)\)",
+        "Position": r"Position:\s*(.*)"
     }
 
     extracted_data = {}
@@ -126,38 +136,49 @@ def calculate_iou_bbox(box1_coords, box2_coords):
 
 def load_model():
     processor = LlavaNextProcessor.from_pretrained("llava-hf/llava-v1.6-mistral-7b-hf")
-    model = LlavaNextForConditionalGeneration.from_pretrained(
-        "llava-hf/llava-v1.6-mistral-7b-hf",
-        torch_dtype=torch.float16,
-        low_cpu_mem_usage=True
-    )
-    model.to("cuda:0")
+
+    model = LlavaNextForConditionalGeneration.from_pretrained("TrgTuan10/Thyroid-llava-next-multi-prompt", torch_dtype=torch.float16, low_cpu_mem_usage=True)
+    model.to("cuda")
     return processor, model
 
 def run_tests():
     processor, model = load_model()
-    dataset_path = "llava_medical_short_dataset"
+    dataset_path = "/workspace/lab/llava_medical_multi_question_dataset"
     dataset = LlavaNextDataset(dataset_path, split="test")
+    #get 20 value from dataset
+    dataset = [dataset[i] for i in range(min(20, len(dataset)))]
+
 
     scores = {
         'acc_tirads': 0,
         'acc_results': 0,
         'iou_size': 0,
-        'iou_bbox': 0
+        'iou_bbox': 0,
+        'acc_position': 0
     }
 
     sample_counts = {
         'tirads': 0,
         'results': 0,
         'size': 0,
-        'bbox': 0
+        'bbox': 0,
+        'position': 0
+    }
+
+    not_found_counts = {
+        'tirads': 0,
+        'results': 0,
+        'size': 0,
+        'bbox': 0,
+        'position': 0
     }
 
     for example in dataset:
-        question_id = example["question_id"]
-        question = example["question"]
-        image = example["image"]
-        answer = example["answer"]
+        print(example)
+        question_id = int(example.get("question_id"))
+        question = example.get("question")
+        image = example.get("image")
+        answer = example.get("answer")
 
         # Prepare prompt
         conversation = [
@@ -181,9 +202,12 @@ def run_tests():
             # TIRADS
             model_tirads = extract_TIRADS(model_answer)
             true_tirads = extract_TIRADS(answer)
-            if model_tirads == true_tirads:
-                scores['acc_tirads'] += 1
-            sample_counts['tirads'] += 1
+            if model_tirads != "Not Found" and true_tirads != "Not Found":
+                if model_tirads == true_tirads:
+                    scores['acc_tirads'] += 1
+                sample_counts['tirads'] += 1
+            else:
+                not_found_counts['tirads'] += 1
 
         elif question_id == 1:
             # Size
@@ -192,7 +216,19 @@ def run_tests():
             if model_size and true_size:
                 iou_size = calculate_iou_size(model_size, true_size)
                 scores['iou_size'] += iou_size
-            sample_counts['size'] += 1
+                sample_counts['size'] += 1
+            else:
+                not_found_counts['size'] += 1
+
+            # Position
+            model_position = extract_postion(model_answer)
+            true_position = extract_postion(answer)
+            if model_position != "Not Found" and true_position != "Not Found":
+                if model_position == true_position:
+                    scores['acc_position'] += 1
+                sample_counts['position'] += 1
+            else:
+                not_found_counts['position'] += 1
 
         elif question_id == 2:
             # Bbox
@@ -201,15 +237,20 @@ def run_tests():
             if model_bbox['Bbox'] != "Not Found" and true_bbox['Bbox'] != "Not Found":
                 iou_bbox = calculate_iou_bbox(model_bbox['Bbox'], true_bbox['Bbox'])
                 scores['iou_bbox'] += iou_bbox
-            sample_counts['bbox'] += 1
+                sample_counts['bbox'] += 1
+            else:
+                not_found_counts['bbox'] += 1
 
         elif question_id == 3:
             # Results
             model_results = extract_results(model_answer)
             true_results = extract_results(answer)
-            if model_results == true_results:
-                scores['acc_results'] += 1
-            sample_counts['results'] += 1
+            if model_results != "Not Found" and true_results != "Not Found":
+                if model_results == true_results:
+                    scores['acc_results'] += 1
+                sample_counts['results'] += 1
+            else:
+                not_found_counts['results'] += 1
 
         elif question_id == 4:
             # All parts
@@ -217,34 +258,53 @@ def run_tests():
             true_data = extract_all(answer)
 
             # TIRADS
-            if model_data["TIRADS"] == true_data["TIRADS"]:
-                scores['acc_tirads'] += 1
-            sample_counts['tirads'] += 1
+            if model_data["TIRADS"] != "Not Found" and true_data["TIRADS"] != "Not Found":
+                if model_data["TIRADS"] == true_data["TIRADS"]:
+                    scores['acc_tirads'] += 1
+                sample_counts['tirads'] += 1
+            else:
+                not_found_counts['tirads'] += 1
 
             # Results
-            if model_data["Results"] == true_data["Results"]:
-                scores['acc_results'] += 1
-            sample_counts['results'] += 1
+            if model_data["Results"] != "Not Found" and true_data["Results"] != "Not Found":
+                if model_data["Results"] == true_data["Results"]:
+                    scores['acc_results'] += 1
+                sample_counts['results'] += 1
+            else:
+                not_found_counts['results'] += 1
 
             # Size
             if model_data["Size"] != "Not Found" and true_data["Size"] != "Not Found":
                 iou_size = calculate_iou_size(model_data["Size"], true_data["Size"])
                 scores['iou_size'] += iou_size
-            sample_counts['size'] += 1
+                sample_counts['size'] += 1
+            else:
+                not_found_counts['size'] += 1
 
             # Bbox
             if model_data["Bbox"] != "Not Found" and true_data["Bbox"] != "Not Found":
                 iou_bbox = calculate_iou_bbox(model_data["Bbox"], true_data["Bbox"])
                 scores['iou_bbox'] += iou_bbox
-            sample_counts['bbox'] += 1
+                sample_counts['bbox'] += 1
+            else:
+                not_found_counts['bbox'] += 1
+
+            # Position
+            if model_data["Position"] != "Not Found" and true_data["Position"] != "Not Found":
+                if model_data["Position"] == true_data["Position"]:
+                    scores['acc_position'] += 1
+                sample_counts['position'] += 1
+            else:
+                not_found_counts['position'] += 1
 
     # Calculate average scores
     avg_acc_tirads = scores['acc_tirads'] / sample_counts['tirads'] if sample_counts['tirads'] > 0 else 0
     avg_acc_results = scores['acc_results'] / sample_counts['results'] if sample_counts['results'] > 0 else 0
     avg_iou_size = scores['iou_size'] / sample_counts['size'] if sample_counts['size'] > 0 else 0
     avg_iou_bbox = scores['iou_bbox'] / sample_counts['bbox'] if sample_counts['bbox'] > 0 else 0
+    avg_acc_position = scores['acc_position'] / sample_counts['position'] if sample_counts['position'] > 0 else 0
 
-    return avg_acc_tirads, avg_iou_size, avg_iou_bbox, avg_acc_results
+    return avg_acc_tirads, avg_iou_size, avg_iou_bbox, avg_acc_results, avg_acc_position, not_found_counts
 
 if __name__ == "__main__":
     results = run_tests()
@@ -252,5 +312,5 @@ if __name__ == "__main__":
     print(f"Average IoU for Size: {results[1]}")
     print(f"Average IoU for Bbox: {results[2]}")
     print(f"Average Accuracy for Results: {results[3]}")
-
-    
+    print(f"Average Accuracy for Position: {results[4]}")
+    print(f"Counts of missing values: {results[5]}")
