@@ -137,7 +137,7 @@ def calculate_iou_bbox(box1_coords, box2_coords):
 def load_model():
     processor = LlavaNextProcessor.from_pretrained("llava-hf/llava-v1.6-mistral-7b-hf")
 
-    model = LlavaNextForConditionalGeneration.from_pretrained("TrgTuan10/Thyroid-llava-next-multi-prompt", torch_dtype=torch.float16, low_cpu_mem_usage=True) 
+    model = LlavaNextForConditionalGeneration.from_pretrained("TrgTuan10/Thyroid-llava-next-multi-prompt", torch_dtype=torch.float16, low_cpu_mem_usage=True)
     model.to("cuda")
     return processor, model
 
@@ -229,7 +229,7 @@ def run_tests():
                 sample_counts['position'] += 1
             else:
                 not_found_counts['position'] += 1
-            
+
         elif question_id == 2:
             # Bbox
             model_bbox = extract_bbox(model_answer)
@@ -314,5 +314,3 @@ if __name__ == "__main__":
     print(f"Average Accuracy for Results: {results[3]}")
     print(f"Average Accuracy for Position: {results[4]}")
     print(f"Counts of missing values: {results[5]}")
-
-    
