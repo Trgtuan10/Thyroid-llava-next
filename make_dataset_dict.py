@@ -5,24 +5,30 @@ import argparse
 # Process the data to include 'question', 'image', and 'answer'
 def process_data(data, data_dir="images"):
     processed_data = {
+        "question_id": [],
+        "question": [],
         "image": [],
         "answer": []
     }
     for entry in data:
         image = entry["images"]
         answer = entry["conversations"][-1]["value"]  # Assuming the last conversation is the answer
+        question = entry["conversations"][0]["value"]  # Assuming the last conversation is the question
+        question_id = entry["question_id"]  # Assuming the last conversation is the question
         processed_data["image"].append(Image.open(f"{data_dir}/{image}"))
         processed_data["answer"].append(answer)
+        processed_data["question"].append(question)
+        processed_data["question_id"].append(question_id)
     return processed_data
 
 if __name__ == "__main__":
     #parser
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", type=str, default="../images")
-    parser.add_argument("--output_dir", type=str, default="../llava_medical_short_dataset")
+    parser.add_argument("--output_dir", type=str, default="../llava_medical_multi_question_dataset")
     args = parser.parse_args()
 
-    with open("llava_medical_short.json", "r") as file:
+    with open("../llava_medical_final_longer.json", "r") as file:
         try:
             json_data = json.load(file)
         except json.JSONDecodeError as e:

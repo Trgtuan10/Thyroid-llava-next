@@ -118,6 +118,7 @@ def train_collate_fn(examples):
     texts = []
 
     for example in examples:
+        question = example["question"]
         image = example["image"]
         answer = example["answer"]
 
@@ -130,7 +131,7 @@ def train_collate_fn(examples):
                 "role": "user",
                 "content": [
                     {"type": "image"},  # This is where you refer to the image token
-                    {"type": "text", "text": "Predict the TIRADS classification, FNAC result, and potential diagnosis based on this thyroid ultrasound image with: TIRADS is a system that classifies thyroid nodules based on ultrasound features to assess malignancy risk, ranging from benign (TIRADS 1) to highly suspicious (TIRADS 5). FNAC is a procedure that uses a needle to collect cells from nodules for diagnosis, determining if they are benign or malignant. Histopathology examines tissue under a microscope to confirm malignancy, and malignancy refers to the presence of cancerous cells in a nodule. "},
+                    {"type": "text", "text": question},
                 ],
             },
             {
@@ -163,6 +164,7 @@ def eval_collate_fn(examples):
 
     # Loop through the examples in the batch
     for example in examples:
+        question = example["question"]    # Extract the user's question
         image = example["image"]          # Extract the image
         answer = example["answer"]        # Extract the assistant's answer (text)
 
@@ -173,9 +175,9 @@ def eval_collate_fn(examples):
         conversation = [
             {
                 "role": "user",
-                "content": [
+                "content": [    
                     {"type": "image"},  # Reference to the image
-                    {"type": "text", "text": "Predict the TIRADS classification, FNAC result, and potential diagnosis based on this thyroid ultrasound image with: TIRADS is a system that classifies thyroid nodules based on ultrasound features to assess malignancy risk, ranging from benign (TIRADS 1) to highly suspicious (TIRADS 5). FNAC is a procedure that uses a needle to collect cells from nodules for diagnosis, determining if they are benign or malignant. Histopathology examines tissue under a microscope to confirm malignancy, and malignancy refers to the presence of cancerous cells in a nodule."},  # User's question
+                    {"type": "text", "text": question},  # User's question
                 ],
             }
         ]
@@ -192,6 +194,7 @@ def eval_collate_fn(examples):
 
     # Return the necessary tensors for the model's input, along with ground truth answers for evaluation
     return batch["input_ids"], batch["attention_mask"], batch["pixel_values"], batch["image_sizes"], answers
+
 
 class PushToHubCallback(Callback):
     def on_train_epoch_end(self, trainer, pl_module):
@@ -221,7 +224,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--accumulate_grad_batches", type=int, default=8)
     parser.add_argument("--num_nodes", type=int, default=1)
-    parser.add_argument("--strategy", type=str, default=None)
+    parser.add_argument("--strategy", type=str, default="auto")
     parser.add_argument("--gpus", type=str, default="0", help="Comma-separated list of GPUs to use.")
     parser.add_argument("--warmup_steps", type=int, default=50)
     parser.add_argument("--result_path", type=str, default="./result")
@@ -247,7 +250,7 @@ if __name__ == "__main__":
 
     MAX_LENGTH = 256
     MODEL_ID = "llava-hf/llava-v1.6-mistral-7b-hf"
-    REPO_ID = "TrgTuan10/Thyroid-llava-next"
+    REPO_ID = "TrgTuan10/Thyroid-llava-next-multi-prompt"
     WANDB_PROJECT = "LLaVaNeXT-Thyroid"
 
     now = datetime.datetime.now()
