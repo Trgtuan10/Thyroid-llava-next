@@ -97,7 +97,6 @@ def display_and_save_counts(tirads_count, results_count, position_count, bbox_co
             "TIRADS": dict(tirads_count),
             "Results": dict(results_count),
             "Position": dict(position_count),
-            "Bbox": dict(bbox_count),
             "Size": dict(size_count)
         }
         with open(output_file, "w") as file:
@@ -105,7 +104,7 @@ def display_and_save_counts(tirads_count, results_count, position_count, bbox_co
         print(f"Counts saved to {output_file}")
 
 # Main execution
-file_path = "llava_medical_final_longer.json"  # Path to the input JSON file
+file_path = "../llava_medical_final_longer.json"  # Path to the input JSON file
 output_file = "counts_output.json"      # Optional: Path to save the counts
 
 data = load_data(file_path)
