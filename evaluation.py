@@ -1,13 +1,4 @@
 import json
-import numpy as np
-import os
-from collections import Counter
-from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration
-from datasets import load_from_disk, load_dataset
-from dataset import LlavaNextDataset
-import torch
-from PIL import Image
-import requests
 import re
 
 def extract_TIRADS(text):
@@ -56,7 +47,7 @@ def extract_results(text):
     else:
         return "Not Found"
 
-def extract_postion(text):
+def extract_position(text):
     pattern = r"Position:\s*(.*)"
     match = re.search(pattern, text, re.IGNORECASE)
     if match:
@@ -134,19 +125,38 @@ def calculate_iou_bbox(box1_coords, box2_coords):
     iou = inter_area / float(union_area) if union_area > 0 else 0.0
     return iou
 
-def load_model():
-    processor = LlavaNextProcessor.from_pretrained("llava-hf/llava-v1.6-mistral-7b-hf")
+def average_precision(all_detected_boxes, all_gt_boxes, iou_threshold=0.5):
+    all_detected_boxes = sorted(all_detected_boxes, key=lambda x: x[1], reverse=True)
+    tp = [0] * len(all_detected_boxes)
+    fp = [0] * len(all_detected_boxes)
+    gt_matched = [False] * len(all_gt_boxes)
 
-    model = LlavaNextForConditionalGeneration.from_pretrained("TrgTuan10/Thyroid-llava-next-multi-prompt", torch_dtype=torch.float16, low_cpu_mem_usage=True)
-    model.to("cuda")
-    return processor, model
+    for i, detected_box in enumerate(all_detected_boxes):
+        detected_box_coords = detected_box[0]
+        for j, gt_box in enumerate(all_gt_boxes):
+            iou = calculate_iou_bbox(detected_box_coords, gt_box)
+            if iou > iou_threshold:
+                if not gt_matched[j]:
+                    tp[i] = 1
+                    gt_matched[j] = True
+                    break
+        fp[i] = 1 - tp[i]
+
+    tp_cumsum = [sum(tp[:i+1]) for i in range(len(tp))]
+    fp_cumsum = [sum(fp[:i+1]) for i in range(len(fp))]
+    recall = [tp_cumsum[i] / len(all_gt_boxes) for i in range(len(tp_cumsum))]
+    precision = [tp_cumsum[i] / (tp_cumsum[i] + fp_cumsum[i]) if (tp_cumsum[i] + fp_cumsum[i]) > 0 else 0 for i in range(len(tp_cumsum))]
+
+    ap = 0
+    for i in range(1, len(precision)):
+        ap += (recall[i] - recall[i-1]) * precision[i]
+    return ap
 
 def run_tests():
-    processor, model = load_model()
-    dataset_path = "/workspace/lab/llava_medical_multi_question_dataset"
-    dataset = LlavaNextDataset(dataset_path, split="test")
-    #get 20 value from dataset
-    dataset = [dataset[i] for i in range(min(20, len(dataset)))]
+    #load json 
+    with open("answer.json", "r") as f:
+        data = f.readlines()
+    data = [json.loads(d) for d in data]
 
 
     scores = {
@@ -173,30 +183,13 @@ def run_tests():
         'position': 0
     }
 
-    for example in dataset:
-        print(example)
+    all_detected_boxes = []
+    all_gt_boxes = []
+
+    for example in data:
         question_id = int(example.get("question_id"))
-        question = example.get("question")
-        image = example.get("image")
         answer = example.get("answer")
-
-        # Prepare prompt
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": question},
-                    {"type": "image"},
-                ],
-            },
-        ]
-        prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
-
-        inputs = processor(images=image, text=prompt, return_tensors="pt").to("cuda")
-
-        # Generate model answer
-        output = model.generate(**inputs, max_new_tokens=256)
-        model_answer = processor.decode(output[0], skip_special_tokens=True)
+        model_answer = example.get("model_answer")
 
         if question_id == 0:
             # TIRADS
@@ -221,8 +214,8 @@ def run_tests():
                 not_found_counts['size'] += 1
 
             # Position
-            model_position = extract_postion(model_answer)
-            true_position = extract_postion(answer)
+            model_position = extract_position(model_answer)
+            true_position = extract_position(answer)
             if model_position != "Not Found" and true_position != "Not Found":
                 if model_position == true_position:
                     scores['acc_position'] += 1
@@ -235,9 +228,13 @@ def run_tests():
             model_bbox = extract_bbox(model_answer)
             true_bbox = extract_bbox(answer)
             if model_bbox['Bbox'] != "Not Found" and true_bbox['Bbox'] != "Not Found":
-                iou_bbox = calculate_iou_bbox(model_bbox['Bbox'], true_bbox['Bbox'])
-                scores['iou_bbox'] += iou_bbox
-                sample_counts['bbox'] += 1
+                # iou_bbox = calculate_iou_bbox(model_bbox['Bbox'], true_bbox['Bbox'])
+                # scores['iou_bbox'] += iou_bbox
+                # sample_counts['bbox'] += 1
+                confidences = 1.0
+                all_detected_boxes.append((model_bbox['Bbox'], confidences))
+                all_gt_boxes.append(true_bbox['Bbox'])
+
             else:
                 not_found_counts['bbox'] += 1
 
@@ -283,9 +280,12 @@ def run_tests():
 
             # Bbox
             if model_data["Bbox"] != "Not Found" and true_data["Bbox"] != "Not Found":
-                iou_bbox = calculate_iou_bbox(model_data["Bbox"], true_data["Bbox"])
-                scores['iou_bbox'] += iou_bbox
-                sample_counts['bbox'] += 1
+                # iou_bbox = calculate_iou_bbox(model_data["Bbox"], true_data["Bbox"])
+                # scores['iou_bbox'] += iou_bbox
+                # sample_counts['bbox'] += 1
+                confidences = 1.0
+                all_detected_boxes.append((model_bbox['Bbox'], confidences))
+                all_gt_boxes.append(true_bbox['Bbox'])
             else:
                 not_found_counts['bbox'] += 1
 
@@ -301,16 +301,24 @@ def run_tests():
     avg_acc_tirads = scores['acc_tirads'] / sample_counts['tirads'] if sample_counts['tirads'] > 0 else 0
     avg_acc_results = scores['acc_results'] / sample_counts['results'] if sample_counts['results'] > 0 else 0
     avg_iou_size = scores['iou_size'] / sample_counts['size'] if sample_counts['size'] > 0 else 0
-    avg_iou_bbox = scores['iou_bbox'] / sample_counts['bbox'] if sample_counts['bbox'] > 0 else 0
+    #avg_iou_bbox = scores['iou_bbox'] / sample_counts['bbox'] if sample_counts['bbox'] > 0 else 0
+    #Compute mAP-50, mAP-75, mAP-95
+    ap_50 = average_precision(all_detected_boxes, all_gt_boxes, iou_threshold=0.5)
+    ap_75 = average_precision(all_detected_boxes, all_gt_boxes, iou_threshold=0.75)
+    ap_95 = average_precision(all_detected_boxes, all_gt_boxes, iou_threshold=0.95)
+    ap = [ap_50, ap_75, ap_95]
     avg_acc_position = scores['acc_position'] / sample_counts['position'] if sample_counts['position'] > 0 else 0
 
-    return avg_acc_tirads, avg_iou_size, avg_iou_bbox, avg_acc_results, avg_acc_position, not_found_counts
+    return avg_acc_tirads, avg_iou_size, ap, avg_acc_results, avg_acc_position, not_found_counts
 
 if __name__ == "__main__":
     results = run_tests()
     print(f"Average Accuracy for TIRADS: {results[0]}")
     print(f"Average IoU for Size: {results[1]}")
-    print(f"Average IoU for Bbox: {results[2]}")
+    print("Average AP for IoU:")
+    print(f"mAP-50: {results[2][0]}")
+    print(f"mAP-75: {results[2][1]}")
+    print(f"mAP-95: {results[2][2]}")
     print(f"Average Accuracy for Results: {results[3]}")
     print(f"Average Accuracy for Position: {results[4]}")
     print(f"Counts of missing values: {results[5]}")

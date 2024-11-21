@@ -14,6 +14,18 @@ import numpy as np
 import argparse
 from typing import List
 
+from evaluation import (
+    extract_TIRADS,
+    extract_results,
+    extract_size,
+    extract_position,
+    average_precision,
+    calculate_iou_size,
+    extract_all,
+    extract_bbox,
+)
+
+
 
 
 # Define LlavaModelPLModule class here (same as before)
@@ -31,6 +43,8 @@ class LlavaModelPLModule(L.LightningModule):
         self.eval_collate_fn = eval_collate_fn
 
         self.batch_size = config.get("batch_size")
+
+        self.validation_outputs = []
 
     def training_step(self, batch, batch_idx):
 
@@ -55,36 +69,215 @@ class LlavaModelPLModule(L.LightningModule):
 
         return loss
 
-    def validation_step(self, batch, batch_idx, dataset_idx=0):
-        # Unpack the batch
-        input_ids, attention_mask, pixel_values, image_sizes, answers = batch
+    def validation_step(self, batch, batch_idx):
+        # Overwrite validation_step to implement custom validation logic
+        input_ids, attention_mask, pixel_values, image_sizes, answers, question_ids = batch
 
         # Generate predictions using autoregression
         generated_ids = self.model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            pixel_values=pixel_values,
+            input_ids=input_ids.to(self.device),
+            attention_mask=attention_mask.to(self.device),
+            pixel_values=pixel_values.to(self.device),
             image_sizes=image_sizes,
             max_new_tokens=self.config.get("max_new_tokens", 128)
         )
 
         # Decode the generated tokens into text
-        predictions = self.processor.batch_decode(generated_ids[:, input_ids.size(1):], skip_special_tokens=True)
+        predictions = self.processor.batch_decode(
+            generated_ids[:, input_ids.size(1):], skip_special_tokens=True
+        )
 
-        scores = []
-        for pred, answer in zip(predictions, answers):
-            # No regex is needed here, directly compare
-            scores.append(edit_distance(pred, answer) / max(len(pred), len(answer)))
+        # Collect outputs
+        outputs = []
+        for pred, answer, question_id in zip(predictions, answers, question_ids):
+            outputs.append({
+                "question_id": int(question_id),
+                "answer": answer,
+                "model_answer": pred
+            })
 
-            if self.config.get("verbose", False) and len(scores) == 1:
-                print(f"Prediction: {pred}")
-                print(f"    Answer: {answer}")
-                print(f" Normed ED: {scores[0]}")
+        # Store outputs for later use in on_validation_epoch_end
+        self.validation_outputs.extend(outputs)
+        print("outputs", outputs)   
 
-        # Log validation edit distance
-        self.log("val_edit_distance", np.mean(scores), on_step=True, on_epoch=True, prog_bar=True, logger=True)
+    def on_validation_epoch_end(self):
+        # This method is called automatically at the end of the validation epoch
+        # Process all collected outputs
+        all_outputs = self.validation_outputs
 
-        return scores
+        # Reset the validation outputs for the next epoch
+        self.validation_outputs = []
+
+        # Initialize scores and counts
+        scores = {
+        'acc_tirads': 0,
+        'acc_results': 0,
+        'iou_size': 0,
+        'iou_bbox': 0,
+        'acc_position': 0
+        }
+
+        sample_counts = {
+            'tirads': 0,
+            'results': 0,
+            'size': 0,
+            'bbox': 0,
+            'position': 0
+        }
+
+        not_found_counts = {
+            'tirads': 0,
+            'results': 0,
+            'size': 0,
+            'bbox': 0,
+            'position': 0
+        }
+        all_detected_boxes = []
+        all_gt_boxes = []
+
+        for example in all_outputs:
+            question_id = int(example.get("question_id"))
+            answer = example.get("answer")
+            model_answer = example.get("model_answer")
+
+            # Include your evaluation logic here
+
+            if question_id == 0:
+                # TIRADS
+                model_tirads = extract_TIRADS(model_answer)
+                true_tirads = extract_TIRADS(answer)
+                if model_tirads != "Not Found" and true_tirads != "Not Found":
+                    if model_tirads == true_tirads:
+                        scores['acc_tirads'] += 1
+                    sample_counts['tirads'] += 1
+                else:
+                    not_found_counts['tirads'] += 1
+
+            elif question_id == 1:
+                # Size
+                model_size = extract_size(model_answer)
+                true_size = extract_size(answer)
+                if model_size and true_size:
+                    iou_size = calculate_iou_size(model_size, true_size)
+                    scores['iou_size'] += iou_size
+                    sample_counts['size'] += 1
+                else:
+                    not_found_counts['size'] += 1
+
+                # Position
+                model_position = extract_position(model_answer)
+                true_position = extract_position(answer)
+                if model_position != "Not Found" and true_position != "Not Found":
+                    if model_position == true_position:
+                        scores['acc_position'] += 1
+                    sample_counts['position'] += 1
+                else:
+                    not_found_counts['position'] += 1
+
+            elif question_id == 2:
+                # Bbox
+                model_bbox = extract_bbox(model_answer)
+                true_bbox = extract_bbox(answer)
+                if model_bbox['Bbox'] != "Not Found" and true_bbox['Bbox'] != "Not Found":
+                    # iou_bbox = calculate_iou_bbox(model_bbox['Bbox'], true_bbox['Bbox'])
+                    # scores['iou_bbox'] += iou_bbox
+                    # sample_counts['bbox'] += 1
+                    confidences = 1.0
+                    all_detected_boxes.append((model_bbox['Bbox'], confidences))
+                    all_gt_boxes.append(true_bbox['Bbox'])
+
+                else:
+                    not_found_counts['bbox'] += 1
+
+            elif question_id == 3:
+                # Results
+                model_results = extract_results(model_answer)
+                true_results = extract_results(answer)
+                if model_results != "Not Found" and true_results != "Not Found":
+                    if model_results == true_results:
+                        scores['acc_results'] += 1
+                    sample_counts['results'] += 1
+                else:
+                    not_found_counts['results'] += 1
+
+            elif question_id == 4:
+                # All parts
+                model_data = extract_all(model_answer)
+                true_data = extract_all(answer)
+
+                # TIRADS
+                if model_data["TIRADS"] != "Not Found" and true_data["TIRADS"] != "Not Found":
+                    if model_data["TIRADS"] == true_data["TIRADS"]:
+                        scores['acc_tirads'] += 1
+                    sample_counts['tirads'] += 1
+                else:
+                    not_found_counts['tirads'] += 1
+
+                # Results
+                if model_data["Results"] != "Not Found" and true_data["Results"] != "Not Found":
+                    if model_data["Results"] == true_data["Results"]:
+                        scores['acc_results'] += 1
+                    sample_counts['results'] += 1
+                else:
+                    not_found_counts['results'] += 1
+
+                # Size
+                if model_data["Size"] != "Not Found" and true_data["Size"] != "Not Found":
+                    iou_size = calculate_iou_size(model_data["Size"], true_data["Size"])
+                    scores['iou_size'] += iou_size
+                    sample_counts['size'] += 1
+                else:
+                    not_found_counts['size'] += 1
+
+                # Bbox
+                if model_data["Bbox"] != "Not Found" and true_data["Bbox"] != "Not Found":
+                    # iou_bbox = calculate_iou_bbox(model_data["Bbox"], true_data["Bbox"])
+                    # scores['iou_bbox'] += iou_bbox
+                    # sample_counts['bbox'] += 1
+                    confidences = 1.0
+                    all_detected_boxes.append((model_bbox['Bbox'], confidences))
+                    all_gt_boxes.append(true_bbox['Bbox'])
+                else:
+                    not_found_counts['bbox'] += 1
+
+                # Position
+                if model_data["Position"] != "Not Found" and true_data["Position"] != "Not Found":
+                    if model_data["Position"] == true_data["Position"]:
+                        scores['acc_position'] += 1
+                    sample_counts['position'] += 1
+                else:
+                    not_found_counts['position'] += 1
+
+        # Calculate average scores
+        avg_acc_tirads = scores['acc_tirads'] / sample_counts['tirads'] if sample_counts['tirads'] > 0 else 0
+        avg_acc_results = scores['acc_results'] / sample_counts['results'] if sample_counts['results'] > 0 else 0
+        avg_iou_size = scores['iou_size'] / sample_counts['size'] if sample_counts['size'] > 0 else 0
+        avg_acc_position = scores['acc_position'] / sample_counts['position'] if sample_counts['position'] > 0 else 0
+
+        # Compute mAP if there are bbox samples
+        if all_detected_boxes:
+            ap_50 = average_precision(all_detected_boxes, all_gt_boxes, iou_threshold=0.5)
+            ap_75 = average_precision(all_detected_boxes, all_gt_boxes, iou_threshold=0.75)
+            ap_95 = average_precision(all_detected_boxes, all_gt_boxes, iou_threshold=0.95)
+        else:
+            ap_50 = ap_75 = ap_95 = 0.0
+
+        # Log the metrics
+        self.log("val_acc_tirads", avg_acc_tirads, prog_bar=True, logger=True)
+        self.log("val_iou_size", avg_iou_size, prog_bar=True, logger=True)
+        self.log("val_ap_50", ap_50, prog_bar=True, logger=True)
+        self.log("val_ap_75", ap_75, prog_bar=True, logger=True)
+        self.log("val_ap_95", ap_95, prog_bar=True, logger=True)
+        self.log("val_acc_results", avg_acc_results, prog_bar=True, logger=True)
+        self.log("val_acc_position", avg_acc_position, prog_bar=True, logger=True)
+
+        #log not found
+        self.log("z_val_not_found_tirads", not_found_counts['tirads'], prog_bar=True, logger=True)
+        self.log("z_val_not_found_results", not_found_counts['results'], prog_bar=True, logger=True)
+        self.log("z_val_not_found_size", not_found_counts['size'], prog_bar=True, logger=True)
+        self.log("z_val_not_found_position", not_found_counts['position'], prog_bar=True, logger=True)
+
+   
 
     def configure_optimizers(self):
         # you could also add a learning rate scheduler if you want
@@ -161,12 +354,14 @@ def eval_collate_fn(examples):
     images = []
     texts = []
     answers = []
+    question_ids = []
 
     # Loop through the examples in the batch
     for example in examples:
-        question = example["question"]    # Extract the user's question
-        image = example["image"]          # Extract the image
-        answer = example["answer"]        # Extract the assistant's answer (text)
+        question = example["question"]       # Extract the user's question
+        image = example["image"]             # Extract the image
+        answer = example["answer"]           # Extract the assistant's answer (text)
+        question_id = example["question_id"] # Extract the question ID
 
         # Add image to the batch
         images.append(image)
@@ -175,7 +370,7 @@ def eval_collate_fn(examples):
         conversation = [
             {
                 "role": "user",
-                "content": [    
+                "content": [
                     {"type": "image"},  # Reference to the image
                     {"type": "text", "text": question},  # User's question
                 ],
@@ -186,14 +381,15 @@ def eval_collate_fn(examples):
         text_prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
         texts.append(text_prompt)
 
-        # Save the answer to compare later
+        # Save the answer and question ID to compare later
         answers.append(answer)
+        question_ids.append(question_id)
 
     # Process text and images together
     batch = processor(text=texts, images=images, return_tensors="pt", padding=True)
 
-    # Return the necessary tensors for the model's input, along with ground truth answers for evaluation
-    return batch["input_ids"], batch["attention_mask"], batch["pixel_values"], batch["image_sizes"], answers
+    # Return the necessary tensors for the model's input, along with ground truth answers and question IDs for evaluation
+    return batch["input_ids"], batch["attention_mask"], batch["pixel_values"], batch["image_sizes"], answers, question_ids
 
 
 class PushToHubCallback(Callback):
@@ -250,7 +446,8 @@ if __name__ == "__main__":
 
     MAX_LENGTH = 256
     MODEL_ID = "llava-hf/llava-v1.6-mistral-7b-hf"
-    REPO_ID = "TrgTuan10/Thyroid-llava-next-multi-prompt"
+    # REPO_ID = "TrgTuan10/Thyroid-llava-next-multi-prompt"
+    REPO_ID = "TrgTuan10/testing"
     WANDB_PROJECT = "LLaVaNeXT-Thyroid"
 
     now = datetime.datetime.now()
@@ -305,6 +502,12 @@ if __name__ == "__main__":
 
     val_dataset = LlavaNextDataset(dataset_path, split="validation")
 
+    train_dataset = train_dataset.dataset.select(range(10))
+    val_dataset = val_dataset.dataset.select(range(20))
+
+    # Verify the length of the small dataset
+    print(len(train_dataset)) 
+
     # Initialize Wandb Logger
     wandb_logger = WandbLogger(project=WANDB_PROJECT, name=WANDB_NAME)
 
@@ -323,6 +526,7 @@ if __name__ == "__main__":
         "result_path": args.result_path,
         "verbose": args.verbose,
     }
+
     # Initialize the model module
     model_module = LlavaModelPLModule(
         config=config,
@@ -352,7 +556,7 @@ if __name__ == "__main__":
         limit_val_batches=5,
         num_sanity_val_steps=0,
         logger=wandb_logger,
-        callbacks=[PushToHubCallback(), early_stop_callback],
+        # callbacks=[PushToHubCallback(), early_stop_callback],
     )
 
     # Start training
