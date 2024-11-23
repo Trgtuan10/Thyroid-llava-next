@@ -12,8 +12,8 @@ def process_data(data, data_dir="images"):
     }
     for entry in data:
         image = entry["images"]
-        answer = entry["conversations"][-1]["value"]  # Assuming the last conversation is the answer
-        question = entry["conversations"][0]["value"]  # Assuming the last conversation is the question
+        answer = entry["answer"]
+        question = entry["question"] 
         question_id = entry["question_id"]  # Assuming the last conversation is the question
         processed_data["image"].append(Image.open(f"{data_dir}/{image}"))
         processed_data["answer"].append(answer)
@@ -21,40 +21,36 @@ def process_data(data, data_dir="images"):
         processed_data["question_id"].append(question_id)
     return processed_data
 
+def create_dataset(train_json, test_json, train_dir, test_dir, save_path="dataset"):
+    # Load JSON files
+    with open(train_json, "r") as f:
+        train_json_data = json.load(f)
+    with open(test_json, "r") as f:
+        test_json_data = json.load(f)
+
+    # Process train and test data
+    train_data = process_data(train_json_data, train_dir)
+    test_data = process_data(test_json_data, test_dir)
+
+    # Create DatasetDict
+    dataset = DatasetDict({
+        "train": Dataset.from_dict(train_data),
+        "test": Dataset.from_dict(test_data)
+    })
+
+    # Save DatasetDict
+    dataset.save_to_disk(save_path)
+    print(f"Dataset saved to {save_path}")
+
 if __name__ == "__main__":
     #parser
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default="../images")
-    parser.add_argument("--output_dir", type=str, default="../llava_medical_multi_question_dataset")
+    parser.add_argument("--train_dir", type=str, default="/workspace/lab/thyroidv2/thyroid_dataset_v1.0.0/train/images")
+    parser.add_argument("--test_dir", type=str, default="/workspace/lab/thyroidv2/thyroid_dataset_v1.0.0/test/images")
+    parser.add_argument("--output_dir", type=str, default="../llava_medical")
+    parser.add_argument("--train_json", type=str, default="/workspace/lab/Thyroid-llava-next/datasetv2/llava_medical_v2_train.json")
+    parser.add_argument("--test_json", type=str, default="/workspace/lab/Thyroid-llava-next/datasetv2/llava_medical_v2_test.json")
     args = parser.parse_args()
 
-    with open("../llava_medical_final_longer.json", "r") as file:
-        try:
-            json_data = json.load(file)
-        except json.JSONDecodeError as e:
-            print(f"Error at line {e.lineno}, column {e.colno}: {e.msg}")
+    create_dataset(args.train_json, args.test_json, args.train_dir, args.test_dir, args.output_dir)
 
-    train_size = int(0.8 * len(json_data))
-    val_size = int(0.1 * len(json_data))
-
-    train_data = json_data[:train_size]
-    validation_data = json_data[train_size:train_size + val_size]
-    test_data = json_data[train_size + val_size:]
-
-    # Create Dataset objects from processed data
-    train_dataset = Dataset.from_dict(process_data(train_data, data_dir=args.data_dir))
-    validation_dataset = Dataset.from_dict(process_data(validation_data, data_dir=args.data_dir))
-    test_dataset = Dataset.from_dict(process_data(test_data, data_dir=args.data_dir))
-
-    # Create a DatasetDict
-    dataset_dict = DatasetDict({
-        "train": train_dataset,
-        "validation": validation_dataset,
-        "test": test_dataset
-    })
-
-    # Now you can use the dataset_dict for training LLaVA
-    print(dataset_dict)
-
-    # Save the dataset_dict to disk
-    dataset_dict.save_to_disk(args.output_dir)
